@@ -1,9 +1,8 @@
-﻿// checker.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
+// checker.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
 //
 
 #include <iostream>
 #include <fstream>
-#include <regex>
 
 #include <Windows.h>
 
@@ -14,19 +13,11 @@ struct problem {
 	 * @brief 题目名称，如 "math"
 	 */
 	std::string name;
-
+	
 	/**
-	 * @brief 题目文件夹的正则表达式匹配方式
-	 * 比如 "^math\\\\math\\.(cpp|c|pas)$"
+	 * @brief 是否有子文件夹
 	 */
-	std::string regex;
-
-	/**
-	 * @brief 找不到该题源程序时的提示
-	 */
-	std::string not_found_hint = "没有找到任何源文件，请确保你的 cpp/c/pas 文件存在于题目文件夹中，且符合格式要求";
-
-	std::regex dir_matcher;
+	bool has_subfolder;
 
 	std::vector<std::string> existing_files;
 };
@@ -39,29 +30,22 @@ struct contestant {
 	std::string root_path;
 
 	/**
-	 * @brief 选手文件夹的正则表达式匹配方式
-	 * 比如 "^GD-(\\d)[5]$"
-	 */
-	std::string regex;
-
-	/**
 	 * 所有题目的配置项
 	 */
 	std::vector<problem> problems;
+	
+	std::vector<std::string> acceptable_suffixes;
 };
 
 void from_json(const nlohmann::json& j, problem& p) {
 	j.at("name").get_to(p.name);
-	j.at("regex").get_to(p.regex);
-	if (j.count("not_found_hint")) {
-		j.at("not_found_hint").get_to(p.not_found_hint);
-	}
+	j.at("has_subfolder").get_to(p.has_subfolder);
 }
 
 void from_json(const nlohmann::json& j, contestant &c) {
 	j.at("root_path").get_to(c.root_path);
-	j.at("regex").get_to(c.regex);
 	j.at("problems").get_to(c.problems);
+	j.at("acceptable_suffixes").get_to(c.acceptable_suffixes);
 }
 
 std::string path_add_tail_separator(const std::string path) {
@@ -127,10 +111,21 @@ void iterate_all_files(const std::string& path, const std::function<void(const s
 	});
 }
 
+bool is_contestant_id(const std::string &str) {
+	if (str.size() != 8) return false;
+	if (str.compare(0, 3, "GD-") != 0) return false;
+	for (int i = 3; i < 8; i++) {
+		if (!isdigit(str[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 int main(int argc, char** argv) {
 	std::ifstream fin("checker.cfg");
 	if (!fin.is_open()) {
-		std::cerr << "无法找到 checker.cfg 配置文件，请确认本程序运行路径下包含该文件" << std::endl;
+		std::cerr << "Errcode 1, checker.cfg not found" << std::endl;
 
 		system("pause");
 
@@ -144,30 +139,26 @@ int main(int argc, char** argv) {
 		config = nlohmann::json::parse(file_content);
 	}
 	catch (...) {
-		std::cerr << "无法解析 checker.cfg，请确认格式正确" << std::endl;
+		std::cerr << "Errcode 2, checker.cfg unparsable" << std::endl;
 
 		system("pause");
 
 		return 2;
 	}
 
-	for (auto& problem : config.problems) {
-		problem.dir_matcher = std::regex(problem.regex);
-	}
-
-	std::regex dir_matcher(config.regex);
 	std::vector<std::string> valid_folders;
 
-	iterate_child(config.root_path, [&valid_folders, &dir_matcher](WIN32_FIND_DATA file) {
+	iterate_child(config.root_path, [&valid_folders](WIN32_FIND_DATA file) {
 		if (file.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-			if (std::regex_match(file.cFileName, dir_matcher)) {
+			std::string filename = file.cFileName;
+			if (is_contestant_id(filename)) {
 				valid_folders.push_back(file.cFileName);
 			}
 		}
 	});
 
 	if (valid_folders.size() == 0) {
-		std::cerr << "没有找到符合要求的个人文件夹，请检查你的代码文件夹存放位置正确，且考号格式正确" << std::endl;
+		std::cerr << "Errcode 3, No valid personal directory found. Please read contestant notification" << std::endl;
 
 		system("pause");
 
@@ -175,7 +166,7 @@ int main(int argc, char** argv) {
 	}
 
 	if (valid_folders.size() > 1) {
-		std::cerr << "发现多个符合要求的个人文件夹，请确保只有一个需要提交的代码文件夹" << std::endl;
+		std::cerr << "Errcode 4, found multiple personal directories." << std::endl;
 		for (auto& valid_folder : valid_folders) {
 			std::cerr << path_add_tail_separator(config.root_path) + valid_folder << std::endl;
 		}
@@ -191,23 +182,32 @@ int main(int argc, char** argv) {
 	iterate_all_files(user_directory, [&config, &user_directory](const std::string& path) {
 		if (path.compare(0, user_directory.size(), user_directory) == 0) {
 			for (auto& problem : config.problems) {
-				if (std::regex_match(path.substr(user_directory.size()), problem.dir_matcher)) {
-					problem.existing_files.push_back(path);
+				auto relative_path = path.substr(user_directory.size());
+				for (auto& suffix : config.acceptable_suffixes) {
+					if (problem.has_subfolder) {
+						if (relative_path == problem.name + "\\" + problem.name + "." + suffix) {
+							problem.existing_files.push_back(path);
+						}
+					} else {
+						if (relative_path == problem.name + "." + suffix) {
+							problem.existing_files.push_back(path);
+						}
+					}
 				}
 			}
 		}
 	});
 
 	for (auto& problem : config.problems) {
-		std::cerr << "题目 " << problem.name << ":" << std::endl;
+		std::cerr << "Problem " << problem.name << ":" << std::endl;
 		if (problem.existing_files.empty()) {
-			std::cerr << "  " << problem.not_found_hint << std::endl;
+			std::cerr << "  No source files found." << std::endl;
 		}
 		else if (problem.existing_files.size() == 1) {
-			std::cerr << "  提交源文件：" << problem.existing_files[0] << std::endl;
+			std::cerr << "  Found：" << problem.existing_files[0] << std::endl;
 		}
 		else {
-			std::cerr << "  找到了多份源文件，请确保本题只有一份源代码" << std::endl;
+			std::cerr << "  Multiple source files found:" << std::endl;
 			for (auto& existing_file : problem.existing_files) {
 				std::cerr << "    " << existing_file << std::endl;
 			}
