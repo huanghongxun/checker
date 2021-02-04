@@ -5,6 +5,9 @@ authors = ["Yuhui Huang", "Yuze Fu <i@xfox.me>"]
 edition = "2018"
 publish = false
 
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [dependencies]
 regex = "1.4.3"
 serde = { version = "1.0", features = ["derive"] }
